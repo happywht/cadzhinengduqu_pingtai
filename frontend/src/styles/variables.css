@@ -1,7 +1,8 @@
 /* CAD智能提取平台 - CSS变量系统 */
+
+/* ========== Light Theme (default) ========== */
 :root {
-  /* 颜色系统 */
-  --bg-app: #f8fafc;
+  --bg-app: #f1f5f9;
   --bg-surface: #ffffff;
   --bg-canvas: #1e293b;
   --bg-hover: #f1f5f9;
@@ -18,31 +19,47 @@
   --danger: #ef4444;
   --warning: #f59e0b;
 
-  /* 间距与尺寸 */
   --radius-md: 8px;
   --radius-lg: 12px;
-  --header-offset: 60px;
+  --header-offset: 52px;
 
-  /* 阴影系统 */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 
-  /* 字体 */
   --font-family: 'Inter', 'Noto Sans SC', sans-serif;
 
-  /* 布局 */
   --config-panel-width: 360px;
   --results-drawer-height: 45%;
   --results-drawer-min-height: 300px;
 }
 
-/* 全局基础样式 */
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* ========== Dark Theme ========== */
+:root.dark {
+  --bg-app: #0f172a;
+  --bg-surface: #1e293b;
+  --bg-canvas: #0f172a;
+  --bg-hover: #1e293b;
+
+  --border-color: #334155;
+
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+
+  --brand-primary: #3b82f6;
+  --brand-hover: #60a5fa;
+
+  --success: #34d399;
+  --danger: #f87171;
+  --warning: #fbbf24;
+
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
 }
+
+/* ========== Global Resets ========== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
   font-family: var(--font-family);
@@ -53,6 +70,7 @@ body {
   flex-direction: column;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.3s, color 0.3s;
 }
 
 *:focus-visible {
@@ -60,21 +78,7 @@ body {
   outline-offset: 2px;
 }
 
-/* 滚动条样式 */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: var(--bg-hover);
-}
-
-::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }

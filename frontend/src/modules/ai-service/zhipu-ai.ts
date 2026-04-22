@@ -1,10 +1,3 @@
-import anthropic from '@anthropic-ai/sdk';
-
-const client = new anthropic.Anthropic({
-  apiKey: '72695ca1e76e4a03be87fd7a76d20f11.3KGSHtrwMj0EPxeJ',
-  baseURL: 'https://open.bigmodel.cn/api/anthropic'
-});
-
 export interface ExtractionConfig {
   headers: Array<{
     name: string;
@@ -12,7 +5,7 @@ export interface ExtractionConfig {
     example?: string;
   }>;
   examples: Array<{
-    image: string;  // base64图片
+    image: string;
     data: Record<string, string>;
   }>;
   instructions?: string;
@@ -30,186 +23,182 @@ export interface ExtractionResult {
 }
 
 export class ZhipuAIService {
+  private apiKey = import.meta.env.VITE_ZHIPU_API_KEY || '';
+  private baseURL = import.meta.env.VITE_ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/anthropic';
   private model = 'glm-4.6';
   private maxTokens = 2000;
+  private maxRetries = 2;
 
-  /**
-   * 从图片中提取信息
-   */
   async extractFromImage(
     base64Image: string,
     config: ExtractionConfig
   ): Promise<ExtractionResult> {
-    try {
-      const prompt = this.buildPrompt(config);
+    let lastError: string = '';
+    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      try {
+        const prompt = this.buildPrompt(config);
+        const body = {
+          model: this.model,
+          max_tokens: this.maxTokens,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Image } },
+              { type: 'text', text: prompt }
+            ]
+          }]
+        };
 
-      const message = await client.messages.create({
-        model: this.model,
-        max_tokens: this.maxTokens,
-        messages: [{
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/png',
-                data: base64Image
-              }
-            },
-            {
-              type: 'text',
-              text: prompt
-            }
-          ]
-        }]
-      });
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
 
-      // 解析AI响应
-      const data = this.parseResponse(message);
+        const res = await fetch(`${this.baseURL}/v1/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this.apiKey,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
+        clearTimeout(timeout);
 
-      return {
-        success: true,
-        data,
-        confidence: this.calculateConfidence(message),
-        usage: {
-          input_tokens: message.usage.input_tokens,
-          output_tokens: message.usage.output_tokens
+        if (res.status === 429) {
+          const wait = Math.pow(2, attempt) * 2000;
+          await this.delay(wait);
+          continue;
         }
-      };
-    } catch (error: any) {
-      console.error('AI提取失败:', error);
-      return {
-        success: false,
-        error: error.message || 'AI提取失败'
-      };
+        if (!res.ok) {
+          const err = await res.text();
+          throw new Error(`API ${res.status}: ${err}`);
+        }
+
+        const message = await res.json();
+        const data = this.parseResponse(message);
+        if (Object.keys(data).length === 0) {
+          return { success: true, data: {}, confidence: 0.1, usage: { input_tokens: message.usage?.input_tokens || 0, output_tokens: message.usage?.output_tokens || 0 } };
+        }
+
+        return {
+          success: true,
+          data,
+          confidence: this.calculateConfidence(data, config),
+          usage: { input_tokens: message.usage?.input_tokens || 0, output_tokens: message.usage?.output_tokens || 0 }
+        };
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : '未知错误';
+        lastError = msg;
+        if (attempt < this.maxRetries && !msg.includes('API 4')) {
+          await this.delay(1000 * (attempt + 1));
+        }
+      }
     }
+    return { success: false, error: lastError };
   }
 
-  /**
-   * 批量提取（支持多个图片）
-   */
   async batchExtractFromImages(
     images: string[],
     config: ExtractionConfig,
     onProgress?: (current: number, total: number) => void
   ): Promise<ExtractionResult[]> {
     const results: ExtractionResult[] = [];
-
     for (let i = 0; i < images.length; i++) {
       const result = await this.extractFromImage(images[i], config);
       results.push(result);
-
-      if (onProgress) {
-        onProgress(i + 1, images.length);
-      }
-
-      // 添加延迟避免API限流
-      if (i < images.length - 1) {
-        await this.delay(1000);
-      }
+      onProgress?.(i + 1, images.length);
+      if (i < images.length - 1) await this.delay(800);
     }
-
     return results;
   }
 
-  /**
-   * 构建Few-shot提示词
-   */
   private buildPrompt(config: ExtractionConfig): string {
-    let prompt = `你是一个专业的CAD图纸信息提取助手。请从图纸中提取以下信息：\n\n`;
+    const fields = config.headers.map(h => `- ${h.name}: ${h.description}${h.example ? ` (示例值: ${h.example})` : ''}`).join('\n');
+    const jsonFields = config.headers.map(h => `  "${h.name}": "提取的值或N/A"`).join(',\n');
 
-    prompt += `## 提取字段\n`;
-    config.headers.forEach(h => {
-      prompt += `- **${h.name}**: ${h.description}${h.example ? ` (示例: ${h.example})` : ''}\n`;
-    });
+    let prompt = `你是一个专业的CAD图纸信息提取助手。请从给定的图纸截图中精确提取以下字段信息。
 
-    if (config.examples.length > 0) {
-      prompt += `\n## 参考示例\n`;
-      config.examples.forEach((ex, idx) => {
-        prompt += `\n### 示例${idx + 1}\n`;
-        Object.entries(ex.data).forEach(([key, value]) => {
-          prompt += `- ${key}: ${value}\n`;
-        });
-      });
-    }
+## 需要提取的字段
+${fields}
+
+## 输出要求
+1. 严格按照JSON格式输出，不要输出任何解释性文字
+2. 如果某个字段在截图中无法识别，填写 "N/A"
+3. 提取的数值请保留原图中的单位（如高程带"m"、管径带"DN"等）
+4. 输出格式如下：
+{"fields": {
+${jsonFields}
+}}`;
 
     if (config.instructions) {
-      prompt += `\n## 特殊说明\n${config.instructions}\n`;
+      prompt += `\n\n## 特殊说明\n${config.instructions}`;
     }
-
-    prompt += `\n## 输出格式\n请以JSON格式返回提取结果，格式如下：\n`;
-    prompt += `{\n`;
-    config.headers.forEach((h, idx) => {
-      prompt += `  "${h.name}": "提取的值",${idx < config.headers.length - 1 ? '' : ''}\n`;
-    });
-    prompt += `}\n`;
-
     return prompt;
   }
 
-  /**
-   * 解析AI响应
-   */
-  private parseResponse(message: any): Record<string, string> {
+  private parseResponse(message: unknown): Record<string, string> {
     try {
-      const content = message.content[0];
-      if (content.type === 'text') {
-        const text = content.text;
+      const msg = message as { content?: Array<{ type: string; text?: string }> };
+      const text = msg.content?.[0]?.text;
+      if (!text) return {};
 
-        // 尝试提取JSON
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          return JSON.parse(jsonMatch[0]);
-        }
-
-        // 尝试提取代码块中的JSON
-        const codeMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-        if (codeMatch) {
-          return JSON.parse(codeMatch[1]);
-        }
+      // try code-fenced JSON first (more precise)
+      const codeMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (codeMatch) {
+        const parsed = JSON.parse(codeMatch[1]);
+        return this.flattenResult(parsed);
       }
 
-      throw new Error('无法解析AI响应');
-    } catch (error) {
-      console.error('解析失败:', error);
+      // try raw JSON - find the first valid JSON object
+      const depthScan = this.extractJsonFromText(text);
+      if (depthScan) return this.flattenResult(depthScan);
+
+      return {};
+    } catch {
       return {};
     }
   }
 
-  /**
-   * 计算置信度（基于token使用情况）
-   */
-  private calculateConfidence(message: any): number {
-    // 简单的置信度计算逻辑
-    const outputRatio = message.usage.output_tokens / this.maxTokens;
-    return Math.min(0.99, 0.7 + outputRatio * 0.3);
+  private extractJsonFromText(text: string): Record<string, unknown> | null {
+    let start = -1;
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') { if (depth === 0) start = i; depth++; }
+      if (text[i] === '}') {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          try { return JSON.parse(text.slice(start, i + 1)); } catch { /* continue */ }
+          start = -1;
+        }
+      }
+    }
+    return null;
   }
 
-  /**
-   * 延迟函数
-   */
+  private flattenResult(parsed: Record<string, unknown>): Record<string, string> {
+    // handle {"fields": {...}} wrapper
+    const inner = (parsed.fields && typeof parsed.fields === 'object') ? parsed.fields as Record<string, unknown> : parsed;
+    const result: Record<string, string> = {};
+    for (const [k, v] of Object.entries(inner)) {
+      result[k] = String(v ?? 'N/A');
+    }
+    return result;
+  }
+
+  private calculateConfidence(data: Record<string, string>, config: ExtractionConfig): number {
+    if (!data || Object.keys(data).length === 0) return 0;
+    const total = config.headers.length;
+    if (total === 0) return 0.5;
+    let filled = 0;
+    for (const h of config.headers) {
+      const val = data[h.name];
+      if (val && val !== 'N/A' && val !== 'n/a' && val.trim()) filled++;
+    }
+    return Math.round((filled / total) * 100) / 100;
+  }
+
   private delay(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
-   * 测试连接
-   */
-  async testConnection(): Promise<boolean> {
-    try {
-      const result = await this.extractFromImage(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-        {
-          headers: [{ name: 'test', description: '测试字段' }],
-          examples: [],
-          instructions: '这是一个测试请求'
-        }
-      );
-      return result.success;
-    } catch {
-      return false;
-    }
   }
 }
 

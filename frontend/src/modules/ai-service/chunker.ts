@@ -257,7 +257,7 @@ export class CADImageChunker {
     height: number,
     blockSize: number,
     canvasWidth: number,
-    canvasHeight: number
+    _canvasHeight: number
   ): number {
     const cols = Math.ceil(canvasWidth / blockSize);
     const startCol = Math.floor(x / blockSize);
@@ -311,7 +311,7 @@ export class CADImageChunker {
       0, 0, chunk.width, chunk.height
     );
 
-    return tempCanvas.toDataURL('image/jpeg', 0.85);
+    return tempCanvas.toDataURL('image/png');
   }
 
   /**

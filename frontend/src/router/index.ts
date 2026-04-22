@@ -1,26 +1,19 @@
-import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
-
-const routes: RouteRecordRaw[] = [
-  {
-    path: '/',
-    name: 'Workspace',
-    component: () => import('../views/Workspace.vue')
-  },
-  {
-    path: '/projects',
-    name: 'ProjectList',
-    component: () => import('../views/ProjectList.vue')
-  },
-  {
-    path: '/projects/:id',
-    name: 'ProjectDetail',
-    component: () => import('../views/ProjectDetail.vue')
-  }
-]
+import { createRouter, createWebHistory } from 'vue-router'
 
 const router = createRouter({
   history: createWebHistory(),
-  routes
+  routes: [
+    {
+      path: '/',
+      name: 'Workspace',
+      component: () => import('../views/Workspace.vue')
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      name: 'NotFound',
+      component: () => import('../views/Workspace.vue')
+    }
+  ]
 })
 
 export default router

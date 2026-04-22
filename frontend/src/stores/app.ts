@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 
 export interface CADLayer {
   name: string
@@ -8,87 +8,133 @@ export interface CADLayer {
   visible: boolean
 }
 
-export interface ExtractResult {
-  id: number
+export interface ExtractionResult {
+  id: string
+  image: string
   data: Record<string, string>
-  verified: boolean
+  confidence: number
+  status: 'pending' | 'verified' | 'corrected'
+}
+
+export interface ExtractionField {
+  name: string
+  description: string
+  example: string
+}
+
+export interface TokenStats {
+  inputTokens: number
+  outputTokens: number
+  estimatedCost: number
 }
 
 export const useAppStore = defineStore('app', () => {
-  // 应用状态
-  const isLoading = ref(false)
-  const currentProject = ref<string | null>(null)
+  const cadFile = ref<File | null>(null)
+  const fileName = ref('')
+  const cadFileLoaded = ref(false)
 
-  // CAD相关状态
-  const cadLayers = ref<CADLayer[]>([
-    {
-      name: 'WALLS',
-      color: '#ef4444',
-      description: 'AI推断：建筑墙体，主要结构',
-      visible: true
-    },
-    {
-      name: 'PIPE-WATER',
-      color: '#3b82f6',
-      description: 'AI推断：给水管线，含走向标记',
-      visible: true
-    },
-    {
-      name: 'ELEVATION',
-      color: '#10b981',
-      description: 'AI推断：标高标注点及高程数据',
-      visible: true
+  const layers = ref<CADLayer[]>([])
+  const selectedTemplate = ref('')
+  const fields = ref<ExtractionField[]>([])
+  const legendImage = ref('')
+  const instructions = ref('')
+  const chunkStrategy = ref<'grid' | 'content-aware' | 'hybrid'>('hybrid')
+
+  const isExtracting = ref(false)
+  const extractionPhase = ref('')
+  const extractionProgress = ref(0)
+  const totalChunks = ref(0)
+  const processedChunks = ref(0)
+  const results = ref<ExtractionResult[]>([])
+  const tokenStats = ref<TokenStats | null>(null)
+
+  const showResults = ref(false)
+  const hasResults = computed(() => results.value.length > 0)
+
+  const templatePresets: Record<string, ExtractionField[]> = {
+    pipeline: [
+      { name: '起始点号', description: '管线的起始节点编号', example: 'J1' },
+      { name: '结束点号', description: '管线的结束节点编号', example: 'J2' },
+      { name: '起始高程', description: '起始点的标高值（米）', example: '123.45' },
+      { name: '结束高程', description: '结束点的标高值（米）', example: '122.80' },
+      { name: '管径', description: '管道直径（毫米）', example: 'DN300' },
+      { name: '管材', description: '管道材质', example: 'PE管' }
+    ],
+    column: [
+      { name: '柱编号', description: '柱子的编号标识', example: 'KZ-1' },
+      { name: '截面尺寸', description: '柱子截面尺寸（mm）', example: '500×500' },
+      { name: '混凝土等级', description: '混凝土强度等级', example: 'C30' },
+      { name: '纵筋', description: '纵向钢筋配置', example: '12Φ20' },
+      { name: '箍筋', description: '箍筋配置', example: 'Φ8@100' }
+    ],
+    coordinate: [
+      { name: '基础编号', description: '基础的编号标识', example: 'J-1' },
+      { name: 'X坐标', description: 'X方向坐标值（米）', example: '1234.567' },
+      { name: 'Y坐标', description: 'Y方向坐标值（米）', example: '5678.901' },
+      { name: '基底高程', description: '基础底面标高（米）', example: '120.00' }
+    ]
+  }
+
+  function setCadFile(file: File | null) {
+    cadFile.value = file
+    fileName.value = file?.name || ''
+    cadFileLoaded.value = !!file
+  }
+
+  function loadTemplate(key: string) {
+    selectedTemplate.value = key
+    if (templatePresets[key]) {
+      fields.value = templatePresets[key].map(f => ({ ...f }))
     }
-  ])
-
-  const extractResults = ref<ExtractResult[]>([])
-  const selectedTemplate = ref('管线起止点（起点、终点、高程...）')
-
-  // 操作方法
-  const setLoading = (loading: boolean) => {
-    isLoading.value = loading
   }
 
-  const setCurrentProject = (projectId: string | null) => {
-    currentProject.value = projectId
+  function addField() {
+    fields.value.push({ name: '', description: '', example: '' })
   }
 
-  const updateLayerVisibility = (layerName: string, visible: boolean) => {
-    const layer = cadLayers.value.find((l) => l.name === layerName)
-    if (layer) {
-      layer.visible = visible
-    }
+  function removeField(index: number) {
+    fields.value.splice(index, 1)
   }
 
-  const addExtractResult = (result: ExtractResult) => {
-    extractResults.value.push(result)
+  function updateField(index: number, field: Partial<ExtractionField>) {
+    Object.assign(fields.value[index], field)
   }
 
-  const updateExtractResult = (id: number, data: Record<string, string>) => {
-    const result = extractResults.value.find((r) => r.id === id)
-    if (result) {
-      result.data = data
-    }
+  function updateLayerVisibility(index: number, visible: boolean) {
+    if (layers.value[index]) layers.value[index].visible = visible
   }
 
-  const clearExtractResults = () => {
-    extractResults.value = []
+  function addResult(result: ExtractionResult) {
+    results.value.push(result)
+  }
+
+  function updateResult(id: string, data: Record<string, string>) {
+    const r = results.value.find(r => r.id === id)
+    if (r) { r.data = data; r.status = 'corrected' }
+  }
+
+  function clearResults() {
+    results.value = []
+    tokenStats.value = null
+    extractionProgress.value = 0
+  }
+
+  function resetExtraction() {
+    isExtracting.value = false
+    extractionPhase.value = ''
+    extractionProgress.value = 0
+    totalChunks.value = 0
+    processedChunks.value = 0
   }
 
   return {
-    // 状态
-    isLoading,
-    currentProject,
-    cadLayers,
-    extractResults,
-    selectedTemplate,
-
-    // 方法
-    setLoading,
-    setCurrentProject,
-    updateLayerVisibility,
-    addExtractResult,
-    updateExtractResult,
-    clearExtractResults
+    cadFile, fileName, cadFileLoaded,
+    layers, selectedTemplate, fields, legendImage, instructions, chunkStrategy,
+    templatePresets, loadTemplate, addField, removeField, updateField,
+    updateLayerVisibility, setCadFile,
+    isExtracting, extractionPhase, extractionProgress,
+    totalChunks, processedChunks,
+    results, tokenStats, showResults, hasResults,
+    addResult, updateResult, clearResults, resetExtraction
   }
 })

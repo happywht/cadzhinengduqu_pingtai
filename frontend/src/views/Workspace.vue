@@ -1,130 +1,261 @@
 <template>
-  <div class="workspace-container">
+  <div class="workspace-container" :class="{ 'is-dark': isDark }">
     <div class="cad-panel">
       <div class="cad-toolbar">
-        <button class="btn btn-primary" @click="openFile">打开CAD文件</button>
-        <span v-if="fileName" class="file-name">{{ fileName }}</span>
+        <el-button type="primary" @click="openFile" :icon="FolderOpened" size="small">
+          打开文件
+        </el-button>
+        <span v-if="store.fileName" class="file-name">{{ store.fileName }}</span>
+        <div style="flex:1" />
+        <el-button-group>
+          <el-button size="small" @click="zoomToFit" :disabled="!store.cadFileLoaded" title="全图适配">
+            <el-icon><FullScreen /></el-icon>
+          </el-button>
+          <el-button size="small" @click="toggleTheme" :title="isDark ? '切换亮色模式' : '切换暗色模式'">
+            <el-icon><component :is="isDark ? Sunny : Moon" /></el-icon>
+          </el-button>
+        </el-button-group>
+        <el-button v-if="store.hasResults" text size="small" type="primary" @click="store.showResults = true">
+          结果({{ store.results.length }})
+        </el-button>
       </div>
       <div class="cad-viewer-wrapper">
-        <MlCadViewer
-          ref="cadViewerRef"
-          :local-file="cadFile"
-          :url="cadUrl"
-          :background="0x1e293b"
-          locale="zh"
-        />
+        <div v-if="!store.cadFile" class="empty-state">
+          <el-icon :size="48" color="var(--text-secondary)"><Document /></el-icon>
+          <p class="empty-title">请打开CAD文件开始工作</p>
+          <p class="empty-hint">支持 .dwg / .dxf 格式</p>
+          <el-button type="primary" @click="openFile" style="margin-top:12px">选择文件</el-button>
+        </div>
+        <div v-show="store.cadFile" ref="viewerContainerRef" class="viewer-container">
+          <MlCadViewer
+            :local-file="store.cadFile ?? undefined"
+            :background="isDark ? 0x0f172a : 0xffffff"
+            :theme="isDark ? 'dark' : 'light'"
+            locale="zh"
+            @create="onViewerCreate"
+          />
+        </div>
       </div>
     </div>
     <ConfigPanel @extract="handleExtract" />
-    <LoadingOverlay :is-show="isExtracting" message="AI正在进行多轮多模态解析..." />
-    <ResultsDrawer :is-open="showResults" @close="showResults = false" @confirm="handleConfirm" />
-    <input
-      ref="fileInputRef"
-      type="file"
-      accept=".dwg,.dxf"
-      style="display: none"
-      @change="handleFileSelect"
-    />
+    <ResultsDrawer />
+    <el-dialog v-model="showProgress" title="AI提取进度" width="480px" :close-on-click-modal="false" :show-close="false">
+      <ExtractionProgress
+        :phase="store.extractionPhase"
+        :progress="store.extractionProgress"
+        :total="store.totalChunks"
+        :current="store.processedChunks"
+      />
+    </el-dialog>
+    <input ref="fileInputRef" type="file" accept=".dwg,.dxf" style="display:none" @change="handleFileSelect" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import { FolderOpened, Document, FullScreen, Sunny, Moon } from '@element-plus/icons-vue'
 import { MlCadViewer } from '@mlightcad/cad-viewer'
+import { useAppStore } from '@/stores/app'
+import { ZhipuAIService } from '@/modules/ai-service'
+import { CADImageChunker } from '@/modules/ai-service/chunker'
+import { ImageOptimizer } from '@/modules/ai-service/image-optimizer'
 import ConfigPanel from '@/components/ConfigPanel/index.vue'
 import ResultsDrawer from '@/components/ResultsDrawer/index.vue'
-import LoadingOverlay from '@/components/LoadingOverlay.vue'
+import ExtractionProgress from '@/components/ExtractionProgress.vue'
 
-const cadViewerRef = ref()
+const store = useAppStore()
 const fileInputRef = ref<HTMLInputElement>()
-const cadFile = ref<File | undefined>()
-const fileName = ref('')
-const cadUrl = ref<string | undefined>()
-const isExtracting = ref(false)
-const showResults = ref(false)
+const viewerContainerRef = ref<HTMLDivElement>()
+const showProgress = ref(false)
 
-function openFile() {
-  fileInputRef.value?.click()
+const isDark = ref(true)
+
+onMounted(() => {
+  document.documentElement.classList.add('dark')
+})
+
+function toggleTheme() {
+  isDark.value = !isDark.value
+  document.documentElement.classList.toggle('dark', isDark.value)
 }
 
-function handleFileSelect(event: Event) {
-  const target = event.target as HTMLInputElement
-  const file = target.files?.[0]
+function onViewerCreate() {
+  // CAD viewer initialized - will sync layers when document activates
+}
+
+function zoomToFit() {
+  try {
+    const view = (AcApDocManagerSingleton as any)?.curView
+    view?.zoomToFitDrawing?.()
+  } catch {
+    // fallback: just show message
+    ElMessage.info('请使用CAD查看器内置工具栏的全图适配功能')
+  }
+}
+
+// Lazy access to AcApDocManager - avoid import issues
+let AcApDocManagerSingleton: any = null
+async function getDocManager() {
+  if (AcApDocManagerSingleton) return AcApDocManagerSingleton
+  try {
+    const mod = await import('@mlightcad/cad-simple-viewer')
+    AcApDocManagerSingleton = mod.AcApDocManager?.instance
+    return AcApDocManagerSingleton
+  } catch { return null }
+}
+
+async function syncLayers() {
+  const dm = await getDocManager()
+  if (!dm?.curDoc?.editor) return
+  try {
+    // Access layer info through the document's database
+    const db = dm.curDoc.database
+    if (!db?.layerTable) return
+    const layerTable = db.layerTable
+    const layerNames = Object.keys(layerTable.records || {})
+    if (layerNames.length === 0) return
+    store.layers = layerNames.map(name => {
+      const record = layerTable.records[name]
+      return {
+        name,
+        color: record?.color?.cssColor || '#94a3b8',
+        description: record?.isOn ? '可见图层' : '隐藏图层',
+        visible: record?.isOn ?? true
+      }
+    })
+  } catch {
+    // layers not accessible through this API path
+  }
+}
+
+function openFile() { fileInputRef.value?.click() }
+
+function handleFileSelect(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
-  cadFile.value = file
-  fileName.value = file.name
-  target.value = ''
+  store.setCadFile(file)
+  ;(e.target as HTMLInputElement).value = ''
+  ElMessage.success(`已加载: ${file.name}`)
+  // Try to sync layers after a delay (file needs time to parse)
+  setTimeout(() => syncLayers(), 3000)
 }
 
-function handleExtract() {
-  isExtracting.value = true
-  setTimeout(() => {
-    isExtracting.value = false
-    showResults.value = true
-  }, 2500)
-}
+async function handleExtract() {
+  if (store.isExtracting) return
+  if (!store.cadFile) { ElMessage.warning('请先打开CAD文件'); return }
+  if (store.fields.length === 0) { ElMessage.warning('请配置提取字段'); return }
 
-function handleConfirm() {
-  showResults.value = false
+  store.isExtracting = true
+  store.clearResults()
+  showProgress.value = true
+
+  try {
+    const canvas = viewerContainerRef.value?.querySelector('canvas') as HTMLCanvasElement
+    if (!canvas) throw new Error('未找到CAD画布，请先加载图纸')
+
+    store.extractionPhase = '正在分析图纸结构...'
+    store.extractionProgress = 10
+
+    const chunks = await chunker.intelligentChunk(canvas, {
+      strategy: store.chunkStrategy,
+      chunkSize: 800,
+      overlap: 120
+    })
+    store.totalChunks = chunks.length
+    store.processedChunks = 0
+
+    if (chunks.length === 0) {
+      ElMessage.warning('未检测到有效内容区域，请尝试切换分块策略')
+      return
+    }
+
+    const config = {
+      headers: store.fields.map(f => ({ name: f.name, description: f.description, example: f.example })),
+      examples: [] as Array<{ image: string; data: Record<string, string> }>,
+      instructions: store.instructions || undefined
+    }
+
+    let totalInput = 0, totalOutput = 0
+
+    for (let i = 0; i < chunks.length; i++) {
+      if (!store.isExtracting) break
+      store.extractionPhase = `提取区域 ${i + 1}/${chunks.length}...`
+      store.extractionProgress = 10 + ((i + 1) / chunks.length) * 85
+
+      const chunkImage = chunker.extractChunk(canvas, chunks[i])
+
+      // Detect blank BEFORE compressing to save compute
+      const isBlank = await ImageOptimizer.detectBlankArea(chunkImage)
+      if (isBlank) { store.processedChunks++; continue }
+
+      const compressed = await ImageOptimizer.compressImage(chunkImage, { format: 'image/png' })
+      const base64 = compressed.dataUrl.split(',')[1]
+      const result = await aiService.extractFromImage(base64, config)
+
+      if (result.success && result.data && Object.keys(result.data).length > 0) {
+        store.addResult({
+          id: `chunk-${i}`,
+          image: compressed.dataUrl,
+          data: result.data,
+          confidence: result.confidence || 0.5,
+          status: 'pending'
+        })
+      }
+      if (result.usage) {
+        totalInput += result.usage.input_tokens
+        totalOutput += result.usage.output_tokens
+      }
+      store.processedChunks++
+    }
+
+    store.tokenStats = {
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      estimatedCost: totalInput * 0.0001 + totalOutput * 0.0002
+    }
+    store.extractionPhase = '提取完成！'
+    store.extractionProgress = 100
+
+    if (store.results.length > 0) {
+      store.showResults = true
+      ElMessage.success(`成功提取 ${store.results.length} 条数据`)
+    } else {
+      ElMessage.info('未提取到有效数据，请检查配置和图纸')
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : '未知错误'
+    ElMessage.error(`提取失败: ${msg}`)
+  } finally {
+    store.isExtracting = false
+    showProgress.value = false
+  }
 }
 </script>
 
 <style scoped>
 .workspace-container {
-  display: flex;
-  width: 100%;
-  height: 100%;
-  position: relative;
+  display: flex; width: 100%; height: 100%; position: relative;
+  background: var(--bg-app);
+  transition: background-color 0.3s;
 }
-
-.cad-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
+.cad-panel { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .cad-toolbar {
-  height: 48px;
-  background: #1e293b;
-  border-bottom: 1px solid #334155;
-  display: flex;
-  align-items: center;
-  padding: 0 16px;
-  gap: 12px;
-  position: relative;
-  z-index: 10;
+  height: 44px; background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-color);
+  display: flex; align-items: center; padding: 0 12px; gap: 8px;
+  position: relative; z-index: 10;
+  transition: background-color 0.3s, border-color 0.3s;
 }
-
-.cad-viewer-wrapper {
-  flex: 1;
-  overflow: hidden;
+.cad-viewer-wrapper { flex: 1; overflow: hidden; position: relative; }
+.viewer-container { width: 100%; height: 100%; }
+.file-name { color: var(--text-secondary); font-size: 0.8125rem; }
+.empty-state {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: var(--bg-canvas);
 }
-
-.file-name {
-  color: #94a3b8;
-  font-size: 0.875rem;
-}
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
-  border-radius: 6px;
-  font-size: 0.875rem;
-  cursor: pointer;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #e2e8f0;
-}
-
-.btn-primary {
-  background: #3b82f6;
-  border-color: #3b82f6;
-}
-
-.btn-primary:hover {
-  background: #2563eb;
-}
+.empty-title { color: var(--text-secondary); font-size: 1rem; margin-top: 12px; }
+.empty-hint { color: var(--text-secondary); opacity: 0.5; font-size: 0.75rem; margin-top: 4px; }
 </style>

@@ -1,393 +1,188 @@
 <template>
-  <div class="results-drawer" :class="{ 'is-open': isOpen }">
+  <div class="results-drawer" :class="{ 'is-open': store.showResults }">
     <div class="results-header">
       <div>
-        <h2 style="font-size: 1.125rem">提取结果审核</h2>
-        <p style="font-size: 0.8125rem; color: var(--text-secondary); margin-top: 4px">
-          共提取到 {{ results.length }} 处管线节点数据，请点击卡片核对修正。
-        </p>
+        <h3>提取结果审核</h3>
+        <p class="header-sub">共 {{ store.results.length }} 条数据，点击卡片核对修正</p>
       </div>
-      <button class="btn btn-outline" @click="closeDrawer">保留修改，稍后处理</button>
+      <div class="header-actions">
+        <el-button @click="exportCSV" :icon="Download" :disabled="!store.hasResults">导出CSV</el-button>
+        <el-button @click="store.showResults = false">保留修改，稍后处理</el-button>
+      </div>
     </div>
 
-    <div class="results-content">
-      <div v-for="result in results" :key="result.id" class="result-card" @click="openResult(result)">
+    <div class="results-content" v-if="store.results.length">
+      <div
+        v-for="result in store.results"
+        :key="result.id"
+        class="result-card"
+        :class="{ 'is-danger': hasUnrecognized(result.data) }"
+        @click="openEdit(result)"
+      >
         <div class="result-image">
-          <div class="result-img-placeholder">图纸截块 #{{ result.id }}</div>
+          <img v-if="result.image" :src="result.image" alt="截图" />
+          <span v-else class="img-placeholder">区域 #{{ result.id }}</span>
         </div>
         <div class="result-data">
           <div v-for="(value, key) in result.data" :key="key" class="data-row">
             <span class="data-label">{{ key }}</span>
-            <span class="data-value" :class="{ 'text-danger': value === '无法识别' }">
-              {{ value }}
+            <span class="data-value" :class="{ 'is-warn': value === '无法识别' || !value }">
+              {{ value || '--' }}
             </span>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="results-footer">
-      <button class="btn btn-primary" @click="confirmResults">确认并入库</button>
-    </div>
-  </div>
-
-  <!-- Edit Modal -->
-  <div v-if="selectedResult" class="modal-overlay" :class="{ 'is-open': showModal }" @click="closeModal">
-    <div class="modal" @click.stop>
-      <div class="modal-header">
-        <h3>人工修正提取结果</h3>
-        <button class="btn btn-outline" style="padding: 4px; border: none" @click="closeModal">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-      <div class="modal-body">
-        <div
-          style="
-            flex: 1;
-            background: #e2e8f0;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #64748b;
-          "
-        >
-          [局部图纸高清大图放大镜效果]
-        </div>
-        <div style="flex: 1">
-          <div v-for="(_value, key) in editableData" :key="key" class="form-group">
-            <label class="form-label" :for="`edit-${key}`">{{ key }}</label>
-            <input :id="`edit-${key}`" type="text" v-model="editableData[key]" class="form-input" />
+          <div class="result-meta">
+            <el-tag :type="statusTagType(result.status)" size="small">{{ statusLabel(result.status) }}</el-tag>
+            <span class="confidence">置信度 {{ (result.confidence * 100).toFixed(0) }}%</span>
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn btn-outline" @click="closeModal">取消</button>
-        <button class="btn btn-primary" @click="saveModal">保存修改</button>
+    </div>
+
+    <el-empty v-else description="暂无提取结果" :image-size="80" style="flex:1;display:flex;flex-direction:column;justify-content:center" />
+
+    <div class="results-footer">
+      <span class="footer-stats" v-if="store.tokenStats">
+        Token: {{ store.tokenStats.inputTokens + store.tokenStats.outputTokens }} | 预估费用: ¥{{ store.tokenStats.estimatedCost.toFixed(4) }}
+      </span>
+      <div class="footer-actions">
+        <el-button @click="store.clearResults" :disabled="!store.hasResults">清空结果</el-button>
+        <el-button type="primary" @click="confirmResults" :disabled="!store.hasResults">确认并入库</el-button>
       </div>
     </div>
   </div>
+
+  <el-dialog v-model="showEdit" title="人工修正提取结果" width="640px" :close-on-click-modal="false">
+    <div class="edit-body">
+      <div class="edit-image" v-if="editingResult?.image">
+        <img :src="editingResult.image" alt="截图" />
+      </div>
+      <div class="edit-form">
+        <el-form label-position="top" size="small">
+          <el-form-item v-for="(_val, key) in editData" :key="key" :label="key">
+            <el-input v-model="editData[key]" />
+          </el-form-item>
+        </el-form>
+      </div>
+    </div>
+    <template #footer>
+      <el-button @click="showEdit = false">取消</el-button>
+      <el-button type="primary" @click="saveEdit">保存修改</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useAppStore, type ExtractionResult } from '@/stores/app'
+import { Download } from '@element-plus/icons-vue'
 
-interface ResultData {
-  [key: string]: string
+const store = useAppStore()
+
+const showEdit = ref(false)
+const editingResult = ref<ExtractionResult | null>(null)
+const editData = ref<Record<string, string>>({})
+
+function hasUnrecognized(data: Record<string, string>) {
+  return Object.values(data).some(v => v === '无法识别' || !v)
 }
 
-interface Result {
-  id: number
-  data: ResultData
+function statusTagType(s: string) {
+  if (s === 'verified') return 'success'
+  if (s === 'corrected') return 'warning'
+  return 'info'
 }
 
-defineProps<{
-  isOpen: boolean
-}>()
+function statusLabel(s: string) {
+  if (s === 'verified') return '已确认'
+  if (s === 'corrected') return '已修正'
+  return '待审核'
+}
 
-const emit = defineEmits<{
-  close: []
-  confirm: []
-}>()
+function openEdit(result: ExtractionResult) {
+  editingResult.value = result
+  editData.value = { ...result.data }
+  showEdit.value = true
+}
 
-const results = ref<Result[]>([
-  {
-    id: 1,
-    data: {
-      起始点号: 'W-201',
-      结束点号: 'W-202',
-      起始高程: '12.80m',
-      管径: 'DN300'
-    }
-  },
-  {
-    id: 2,
-    data: {
-      起始点号: 'W-202',
-      结束点号: 'W-203',
-      起始高程: '12.50m',
-      管径: 'DN300'
-    }
-  },
-  {
-    id: 3,
-    data: {
-      起始点号: 'W-203',
-      结束点号: 'W-204',
-      起始高程: '无法识别',
-      管径: 'DN200'
-    }
+function saveEdit() {
+  if (editingResult.value) {
+    store.updateResult(editingResult.value.id, { ...editData.value })
   }
-])
-
-const selectedResult = ref<Result | null>(null)
-const showModal = ref(false)
-const editableData = ref<ResultData>({})
-
-const openResult = (result: Result) => {
-  selectedResult.value = result
-  editableData.value = { ...result.data }
-  showModal.value = true
+  showEdit.value = false
 }
 
-const closeModal = () => {
-  showModal.value = false
-  selectedResult.value = null
+function confirmResults() {
+  store.results.forEach(r => { r.status = 'verified' })
+  store.showResults = false
 }
 
-const saveModal = () => {
-  if (selectedResult.value) {
-    selectedResult.value.data = { ...editableData.value }
-  }
-  closeModal()
-}
-
-const closeDrawer = () => {
-  emit('close')
-}
-
-const confirmResults = () => {
-  emit('confirm')
+function exportCSV() {
+  if (!store.results.length) return
+  const headers = Object.keys(store.results[0].data)
+  const csv = [
+    headers.join(','),
+    ...store.results.map(r => headers.map(h => `"${(r.data[h] || '').replace(/"/g, '""')}"`).join(','))
+  ].join('\n')
+  const BOM = '﻿'
+  const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `提取结果_${new Date().toLocaleDateString()}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 </script>
 
 <style scoped>
 .results-drawer {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  position: absolute; bottom: 0; left: 0; right: 0;
   background: var(--bg-surface);
   height: var(--results-drawer-height);
   min-height: var(--results-drawer-min-height);
   border-top: 1px solid var(--border-color);
-  display: flex;
-  flex-direction: column;
+  display: flex; flex-direction: column;
   box-shadow: var(--shadow-lg);
   transform: translateY(100%);
   transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
   z-index: 20;
 }
-
-.results-drawer.is-open {
-  transform: translateY(0);
-}
-
+.results-drawer.is-open { transform: translateY(0); }
 .results-header {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  padding: 12px 20px; border-bottom: 1px solid var(--border-color);
+  display: flex; justify-content: space-between; align-items: center;
 }
-
+.results-header h3 { font-size: 1rem; font-weight: 600; }
+.header-sub { font-size: 0.75rem; color: var(--text-secondary); margin-top: 2px; }
+.header-actions { display: flex; gap: 8px; }
 .results-content {
-  flex: 1;
-  padding: 24px;
-  overflow-y: auto;
-  background: var(--bg-app);
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 20px;
+  flex: 1; padding: 16px; overflow-y: auto; background: var(--bg-app);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;
 }
-
 .result-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  cursor: pointer;
-  transition: all 0.2s;
+  background: var(--bg-surface); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); overflow: hidden; cursor: pointer; transition: all 0.2s;
 }
-
-.result-card:hover {
-  border-color: var(--brand-primary);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
-}
-
-.result-image {
-  height: 120px;
-  background: var(--bg-hover);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-bottom: 1px solid var(--border-color);
-  position: relative;
-}
-
-.result-img-placeholder {
-  width: 80%;
-  height: 80%;
-  background: #e2e8f0;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-secondary);
-}
-
-.result-data {
-  padding: 12px;
-  flex: 1;
-}
-
-.data-row {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  font-size: 0.8125rem;
-}
-
-.data-label {
-  color: var(--text-secondary);
-}
-
-.data-value {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
+.result-card:hover { border-color: var(--brand-primary); box-shadow: var(--shadow-md); transform: translateY(-2px); }
+.result-card.is-danger { border-left: 3px solid var(--danger); }
+.result-image { height: 100px; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.result-image img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.img-placeholder { font-size: 0.75rem; color: var(--text-secondary); }
+.result-data { padding: 10px; }
+.data-row { display: flex; justify-content: space-between; font-size: 0.75rem; margin-bottom: 4px; }
+.data-label { color: var(--text-secondary); }
+.data-value { font-weight: 500; }
+.data-value.is-warn { color: var(--danger); }
+.result-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-color); }
+.confidence { font-size: 0.6875rem; color: var(--success); }
 .results-footer {
-  padding: 16px 24px;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-surface);
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
+  padding: 10px 20px; border-top: 1px solid var(--border-color);
+  display: flex; justify-content: space-between; align-items: center;
 }
-
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border-radius: 6px;
-  font-weight: 500;
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  padding: 8px 16px;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: 1px solid transparent;
-}
-
-.btn-outline {
-  background-color: transparent;
-  border-color: var(--border-color);
-  color: var(--text-primary);
-}
-
-.btn-outline:hover {
-  background-color: var(--bg-hover);
-  border-color: #cbd5e1;
-}
-
-.btn-primary {
-  background-color: var(--brand-primary);
-  color: white;
-  box-shadow: var(--shadow-sm);
-}
-
-.btn-primary:hover {
-  background-color: var(--brand-hover);
-}
-
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  backdrop-filter: blur(2px);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-
-.modal-overlay.is-open {
-  display: flex;
-  opacity: 1;
-}
-
-.modal {
-  background: var(--bg-surface);
-  border-radius: var(--radius-lg);
-  width: 600px;
-  max-width: 90vw;
-  box-shadow: var(--shadow-lg);
-  transform: scale(0.95);
-  transition: transform 0.2s;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.modal-overlay.is-open .modal {
-  transform: scale(1);
-}
-
-.modal-header {
-  padding: 16px 24px;
-  border-bottom: 1px solid var(--border-color);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.modal-body {
-  padding: 24px;
-  display: flex;
-  gap: 20px;
-}
-
-.modal-footer {
-  padding: 16px 24px;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-hover);
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.form-label {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.form-input {
-  padding: 8px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font-size: 0.875rem;
-  font-family: inherit;
-  transition: border-color 0.2s;
-  width: 100%;
-  background: var(--bg-surface);
-}
-
-.form-input:focus {
-  outline: none;
-  border-color: var(--brand-primary);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
-}
-
-.text-danger {
-  color: var(--danger);
-}
+.footer-stats { font-size: 0.75rem; color: var(--text-secondary); }
+.footer-actions { display: flex; gap: 8px; }
+.edit-body { display: flex; gap: 16px; }
+.edit-image { flex: 1; max-height: 300px; overflow: auto; border: 1px solid var(--border-color); border-radius: 6px; }
+.edit-image img { width: 100%; }
+.edit-form { flex: 1; }
 </style>
