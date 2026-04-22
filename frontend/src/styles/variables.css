@@ -1,0 +1,80 @@
+/* CAD智能提取平台 - CSS变量系统 */
+:root {
+  /* 颜色系统 */
+  --bg-app: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-canvas: #1e293b;
+  --bg-hover: #f1f5f9;
+
+  --border-color: #e2e8f0;
+
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+
+  --brand-primary: #2563eb;
+  --brand-hover: #1d4ed8;
+
+  --success: #10b981;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+
+  /* 间距与尺寸 */
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --header-offset: 60px;
+
+  /* 阴影系统 */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+
+  /* 字体 */
+  --font-family: 'Inter', 'Noto Sans SC', sans-serif;
+
+  /* 布局 */
+  --config-panel-width: 360px;
+  --results-drawer-height: 45%;
+  --results-drawer-min-height: 300px;
+}
+
+/* 全局基础样式 */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-family);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-hover);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}

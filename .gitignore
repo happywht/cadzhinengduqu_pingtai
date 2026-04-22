@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build output
+frontend/dist/
+backend/dist/
+
+# Environment (contains API keys)
+.env
+.env.local
+.env.*.local
+frontend/.env.development
+frontend/.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude local settings
+frontend/.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Uploads
+backend/uploads/
+
+# Vite cache
+frontend/node_modules/.vite/
+
+# Playwright test artifacts
+frontend/.playwright-mcp/
+
+# Temp files
+*.tmp
+*.temp
+
+# Spec workflow
+.spec-workflow/
+
+# Old prototype
+index(1).html
+
+# Dev logs (not needed in repo)
+frontend/docs/
+docs/

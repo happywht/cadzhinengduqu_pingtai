@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  username  String   @unique
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  projects  Project[]
+}
+
+model Project {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files       CADFile[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model CADFile {
+  id              String              @id @default(uuid())
+  projectId       String
+  project         Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filename        String
+  originalName    String
+  filePath        String
+  fileSize        Int
+  fileType        String              // "dwg" or "dxf"
+  parsedData      Json?
+  layers          Json?
+  configs         ExtractionConfig[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([projectId])
+}
+
+model ExtractionConfig {
+  id           String   @id @default(uuid())
+  cadFileId    String
+  cadFile      CADFile  @relation(fields: [cadFileId], references: [id], onDelete: Cascade)
+  name         String
+  headers      String[]
+  legendImage  String?
+  exampleImage String?
+  exampleData  Json?
+  tasks        AITask[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([cadFileId])
+}
+
+model AITask {
+  id              String              @id @default(uuid())
+  configId        String
+  config          ExtractionConfig    @relation(fields: [configId], references: [id], onDelete: Cascade)
+  status          String              @default("pending") // pending, processing, completed, failed
+  totalChunks     Int                 @default(0)
+  processedChunks Int                 @default(0)
+  progress        Float               @default(0)
+  errorMessage    String?
+  results         ExtractionResult[]
+  createdAt       DateTime            @default(now())
+  completedAt     DateTime?
+
+  @@index([configId])
+  @@index([status])
+}
+
+model ExtractionResult {
+  id         String   @id @default(uuid())
+  taskId     String
+  task       AITask   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  chunkIndex Int
+  imageUrl   String
+  data       Json
+  confidence Float?
+  status     String   @default("pending") // pending, verified, rejected
+  verifiedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([taskId])
+  @@index([status])
+}
