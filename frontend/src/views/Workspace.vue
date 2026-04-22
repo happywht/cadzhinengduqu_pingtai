@@ -93,6 +93,18 @@ onUnmounted(() => {
 function toggleTheme() {
   isDark.value = !isDark.value
   document.documentElement.classList.toggle('dark', isDark.value)
+  syncCursorColor()
+}
+
+function syncCursorColor() {
+  try {
+    const editor = docManager?.context?.editor
+    if (editor?.setCursorColor) {
+      editor.setCursorColor(isDark.value ? 'white' : 'black')
+    }
+  } catch {
+    // cursor color sync may fail if viewer not ready
+  }
 }
 
 async function onViewerCreate() {
@@ -112,11 +124,16 @@ async function onViewerCreate() {
       settings.isShowStats = false
     }
 
+    // Fix cursor color: the library only treats background=0 as "dark",
+    // but we use 0x0f172a, so we must explicitly set cursor color
+    syncCursorColor()
+
     // Listen for document activation to sync layers and zoom
     if (docManager?.events?.documentActivated) {
       docManager.events.documentActivated.addEventListener(() => {
         syncLayers()
         zoomToFit()
+        syncCursorColor()
       })
     }
 
