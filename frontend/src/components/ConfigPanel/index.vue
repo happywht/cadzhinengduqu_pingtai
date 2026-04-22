@@ -1,6 +1,22 @@
 <template>
   <aside class="config-panel">
     <div class="config-content">
+      <!-- Step guide -->
+      <div class="step-guide">
+        <div class="step" :class="{ active: store.cadFileLoaded, done: store.cadFileLoaded }">
+          <span class="step-num">1</span>
+          <span class="step-text">打开CAD文件</span>
+        </div>
+        <div class="step" :class="{ active: store.fields.length > 0, done: store.fields.length > 0 }">
+          <span class="step-num">2</span>
+          <span class="step-text">配置提取字段</span>
+        </div>
+        <div class="step" :class="{ active: store.isExtracting || store.hasResults }">
+          <span class="step-num">3</span>
+          <span class="step-text">提取并审核</span>
+        </div>
+      </div>
+
       <div class="section">
         <h3 class="section-title">图层解析</h3>
         <div class="card layer-list">
@@ -21,7 +37,7 @@
         <div class="card">
           <div class="legend-actions">
             <el-button size="small" @click="uploadLegend" :icon="Upload">上传图例</el-button>
-            <el-tooltip content="在CAD图纸上框选图例区域" placement="top">
+            <el-tooltip content="截取CAD画布当前可见区域作为图例" placement="top">
               <el-button size="small" @click="captureLegend" :icon="Camera" :disabled="!store.cadFileLoaded">
                 截取图例
               </el-button>
@@ -102,7 +118,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessageBox, ElMessage } from 'element-plus'
 import { useAppStore } from '@/stores/app'
 import { Delete, Upload, Camera } from '@element-plus/icons-vue'
 
@@ -132,7 +148,19 @@ function handleLegendUpload(e: Event) {
 }
 
 function captureLegend() {
-  // TODO: use AcEditor.getBox() from cad-simple-viewer to implement area selection
+  // Capture current CAD canvas visible area as legend image
+  const container = document.querySelector('.viewer-container')
+  const canvas = container?.querySelector('canvas') as HTMLCanvasElement
+  if (!canvas) {
+    ElMessage.warning('未找到CAD画布，请先加载图纸')
+    return
+  }
+  try {
+    store.legendImage = canvas.toDataURL('image/png')
+    ElMessage.success('已截取当前画布作为图例')
+  } catch {
+    ElMessage.error('截取失败，请尝试上传图例图片')
+  }
 }
 </script>
 
@@ -150,6 +178,27 @@ function captureLegend() {
   flex: 1; overflow-y: auto; padding: 12px;
   display: flex; flex-direction: column; gap: 16px;
 }
+/* Step guide */
+.step-guide {
+  display: flex; gap: 4px; padding: 8px 10px;
+  background: var(--bg-hover); border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+.step {
+  flex: 1; display: flex; align-items: center; gap: 6px;
+  font-size: 0.6875rem; color: var(--text-secondary);
+  opacity: 0.5; transition: all 0.3s;
+}
+.step.active { opacity: 1; color: var(--brand-primary); }
+.step.done .step-num { background: var(--success); color: #fff; }
+.step-num {
+  width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--border-color); color: var(--text-secondary);
+  font-size: 0.625rem; font-weight: 600;
+}
+.step.active .step-num { background: var(--brand-primary); color: #fff; }
+/* Sections */
 .section-title {
   font-size: 0.8125rem; font-weight: 600;
   color: var(--text-primary); margin-bottom: 6px;

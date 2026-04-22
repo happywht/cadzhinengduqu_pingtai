@@ -11,6 +11,9 @@
           <el-button size="small" @click="zoomToFit" :disabled="!store.cadFileLoaded" title="全图适配">
             <el-icon><FullScreen /></el-icon>
           </el-button>
+          <el-button size="small" @click="toggleFullscreen" :disabled="!store.cadFileLoaded" title="全屏模式">
+            <el-icon><Aim /></el-icon>
+          </el-button>
           <el-button size="small" @click="toggleTheme" :title="isDark ? '切换亮色模式' : '切换暗色模式'">
             <el-icon><component :is="isDark ? Sunny : Moon" /></el-icon>
           </el-button>
@@ -19,7 +22,7 @@
           结果({{ store.results.length }})
         </el-button>
       </div>
-      <div class="cad-viewer-wrapper">
+      <div class="cad-viewer-wrapper" ref="viewerWrapperRef">
         <div v-if="!store.cadFile" class="empty-state">
           <el-icon :size="48" color="var(--text-secondary)"><Document /></el-icon>
           <p class="empty-title">请打开CAD文件开始工作</p>
@@ -52,9 +55,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Document, FullScreen, Sunny, Moon } from '@element-plus/icons-vue'
+import { FolderOpened, Document, FullScreen, Sunny, Moon, Aim } from '@element-plus/icons-vue'
 import { MlCadViewer } from '@mlightcad/cad-viewer'
 import { useAppStore } from '@/stores/app'
 import { ZhipuAIService } from '@/modules/ai-service'
@@ -67,12 +70,24 @@ import ExtractionProgress from '@/components/ExtractionProgress.vue'
 const store = useAppStore()
 const fileInputRef = ref<HTMLInputElement>()
 const viewerContainerRef = ref<HTMLDivElement>()
+const viewerWrapperRef = ref<HTMLDivElement>()
 const showProgress = ref(false)
 
 const isDark = ref(true)
 
+// AI service instances
+const aiService = new ZhipuAIService()
+const chunker = new CADImageChunker()
+
+// Document manager reference
+let docManager: any = null
+
 onMounted(() => {
   document.documentElement.classList.add('dark')
+})
+
+onUnmounted(() => {
+  document.removeEventListener('fullscreenchange', onFullscreenChange)
 })
 
 function toggleTheme() {
@@ -80,52 +95,113 @@ function toggleTheme() {
   document.documentElement.classList.toggle('dark', isDark.value)
 }
 
-function onViewerCreate() {
-  // CAD viewer initialized - will sync layers when document activates
+async function onViewerCreate() {
+  // Acquire AcApDocManager singleton
+  try {
+    const mod = await import('@mlightcad/cad-simple-viewer')
+    docManager = mod.AcApDocManager?.instance
+
+    // Configure viewer settings - ensure toolbar and menus are visible
+    const settings = mod.AcApSettingManager?.instance
+    if (settings) {
+      settings.isShowToolbar = true
+      settings.isShowMainMenu = true
+      settings.isShowCommandLine = false
+      settings.isShowEntityInfo = false
+      settings.isShowCoordinate = true
+      settings.isShowStats = false
+    }
+
+    // Listen for document activation to sync layers and zoom
+    if (docManager?.events?.documentActivated) {
+      docManager.events.documentActivated.addEventListener(() => {
+        syncLayers()
+        zoomToFit()
+      })
+    }
+
+    // Document may already be loaded - try immediate sync
+    syncLayers()
+    zoomToFit()
+  } catch (err) {
+    console.warn('CAD viewer init:', err)
+  }
+
+  document.addEventListener('fullscreenchange', onFullscreenChange)
 }
 
-function zoomToFit() {
+function onFullscreenChange() {
+  // Sync state when user exits fullscreen via Esc
+  if (!document.fullscreenElement) {
+    // Exited fullscreen
+  }
+}
+
+async function zoomToFit() {
   try {
-    const view = (AcApDocManagerSingleton as any)?.curView
-    view?.zoomToFitDrawing?.()
+    if (!docManager) {
+      const mod = await import('@mlightcad/cad-simple-viewer')
+      docManager = mod.AcApDocManager?.instance
+    }
+    const view = docManager?.curView
+    if (view?.zoomToFitDrawing) {
+      view.zoomToFitDrawing()
+    }
   } catch {
-    // fallback: just show message
     ElMessage.info('请使用CAD查看器内置工具栏的全图适配功能')
   }
 }
 
-// Lazy access to AcApDocManager - avoid import issues
-let AcApDocManagerSingleton: any = null
-async function getDocManager() {
-  if (AcApDocManagerSingleton) return AcApDocManagerSingleton
-  try {
-    const mod = await import('@mlightcad/cad-simple-viewer')
-    AcApDocManagerSingleton = mod.AcApDocManager?.instance
-    return AcApDocManagerSingleton
-  } catch { return null }
+function toggleFullscreen() {
+  const el = viewerWrapperRef.value
+  if (!el) return
+  if (!document.fullscreenElement) {
+    el.requestFullscreen().catch(() => {
+      ElMessage.warning('浏览器不支持全屏模式')
+    })
+  } else {
+    document.exitFullscreen()
+  }
 }
 
 async function syncLayers() {
-  const dm = await getDocManager()
-  if (!dm?.curDoc?.editor) return
   try {
-    // Access layer info through the document's database
-    const db = dm.curDoc.database
-    if (!db?.layerTable) return
-    const layerTable = db.layerTable
-    const layerNames = Object.keys(layerTable.records || {})
-    if (layerNames.length === 0) return
-    store.layers = layerNames.map(name => {
-      const record = layerTable.records[name]
-      return {
-        name,
-        color: record?.color?.cssColor || '#94a3b8',
-        description: record?.isOn ? '可见图层' : '隐藏图层',
-        visible: record?.isOn ?? true
-      }
-    })
+    if (!docManager) {
+      const mod = await import('@mlightcad/cad-simple-viewer')
+      docManager = mod.AcApDocManager?.instance
+    }
+    if (!docManager) return
+
+    const doc = docManager.curDocument || docManager.mdiActiveDocument
+    if (!doc) return
+    const db = doc.database
+    if (!db) return
+
+    // Correct API path: db.tables → tables.layer → _recordsByName
+    const tables = (db as any).tables
+    if (!tables) return
+
+    const layerTable = tables.layer || tables.layerTable || tables.layers
+    if (!layerTable) return
+
+    const recordsByName = (layerTable as any)._recordsByName
+    if (!recordsByName) return
+
+    // Handle Map vs plain object
+    const layerEntries = recordsByName instanceof Map
+      ? [...recordsByName.entries()]
+      : Object.entries(recordsByName)
+
+    if (layerEntries.length === 0) return
+
+    store.layers = layerEntries.map(([name, record]: [string, any]) => ({
+      name,
+      color: record?.color?.cssColor || record?.color?.toString?.() || '#94a3b8',
+      description: record?.isOn !== undefined ? (record.isOn ? '可见图层' : '隐藏图层') : '图层',
+      visible: record?.isOn ?? true
+    }))
   } catch {
-    // layers not accessible through this API path
+    // Layer sync may fail if document is not fully loaded yet
   }
 }
 
@@ -137,8 +213,16 @@ function handleFileSelect(e: Event) {
   store.setCadFile(file)
   ;(e.target as HTMLInputElement).value = ''
   ElMessage.success(`已加载: ${file.name}`)
-  // Try to sync layers after a delay (file needs time to parse)
-  setTimeout(() => syncLayers(), 3000)
+  // Retry layer sync: document may take time to parse and activate
+  retrySyncLayers()
+}
+
+function retrySyncLayers(attempt = 0) {
+  if (attempt >= 6 || store.layers.length > 0) return
+  setTimeout(() => {
+    syncLayers()
+    if (store.layers.length === 0) retrySyncLayers(attempt + 1)
+  }, 2000 + attempt * 1000)
 }
 
 async function handleExtract() {
@@ -248,6 +332,8 @@ async function handleExtract() {
   transition: background-color 0.3s, border-color 0.3s;
 }
 .cad-viewer-wrapper { flex: 1; overflow: hidden; position: relative; }
+.cad-viewer-wrapper:fullscreen { background: var(--bg-canvas); }
+.cad-viewer-wrapper:fullscreen .viewer-container { height: 100vh; }
 .viewer-container { width: 100%; height: 100%; }
 .file-name { color: var(--text-secondary); font-size: 0.8125rem; }
 .empty-state {
